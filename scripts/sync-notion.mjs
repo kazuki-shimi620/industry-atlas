@@ -1,0 +1,13 @@
+import fs from 'node:fs/promises';
+import {validateAtlas} from '../src/model.mjs';
+const normalizeId=id=>id.replaceAll('-','');
+const token=process.env.NOTION_TOKEN;if(!token)throw Error('NOTION_TOKEN is required');
+const companyId=process.env.NOTION_COMPANIES_DB_ID||'dad0713ed692450abce0f3fc71640179';
+const brandId=process.env.NOTION_BRANDS_DB_ID||'b6f92467dbbc4a17a734373c2ffe4797';
+const headers={'Authorization':`Bearer ${token}`,'Notion-Version':'2022-06-28','Content-Type':'application/json'};
+async function request(url,body){for(let attempt=0;attempt<7;attempt++){const r=await fetch(url,{method:'POST',headers,body:JSON.stringify(body)});if(r.status===429||r.status>=500){await new Promise(ok=>setTimeout(ok,(Number(r.headers.get('retry-after'))||2)*(attempt+1)*1000));continue}if(!r.ok)throw Error(`${r.status} ${await r.text()}`);return r.json()}throw Error('Notion retries exhausted')}
+async function collect(db){let rows=[],cursor;do{const result=await request(`https://api.notion.com/v1/databases/${db}/query`,{page_size:100,...(cursor?{start_cursor:cursor}:{})});rows.push(...result.results);cursor=result.has_more?result.next_cursor:null;await new Promise(r=>setTimeout(r,350))}while(cursor);return rows}
+const prop=(p,k)=>p.properties?.[k];const plain=x=>x?.map(v=>v.plain_text||'').join('')||'';const rel=x=>x?.relation?.map(r=>normalizeId(r.id))||[];const idurl=id=>`https://www.notion.so/${id.replace(/-/g,'')}`;
+const companies=(await collect(companyId)).map(p=>({id:normalizeId(p.id),name:plain(prop(p,'会社名')?.title),url:p.url||idurl(p.id),industries:prop(p,'地図業界')?.multi_select?.map(v=>v.name)||[],display:prop(p,'地図表示')?.select?.name||'',parentIds:rel(prop(p,'地図上の親グループ')),business:prop(p,'事業区分')?.select?.name||'',verified:prop(p,'確認状況')?.select?.name||'',relatedIds:rel(prop(p,'関連企業')),evidenceUrl:prop(p,'関係根拠URL')?.url||'',verifiedAt:prop(p,'関係確認日')?.date?.start||''}));
+const brands=(await collect(brandId)).map(p=>({id:normalizeId(p.id),name:plain(prop(p,'ブランド名')?.title),url:p.url||idurl(p.id),groupIds:rel(prop(p,'企業グループ')),operatorIds:rel(prop(p,'運営企業')),category:prop(p,'カテゴリ')?.select?.name||''}));
+const data={updatedAt:new Date().toISOString(),companies,brands,source:'Notion',status:'synced'};const errors=validateAtlas(data);if(errors.length)throw Error(errors.join('\n'));if(!companies.length||!brands.length)throw Error('Empty sync result; previous snapshot preserved');await fs.writeFile(new URL('../data/atlas.json.tmp',import.meta.url),JSON.stringify(data,null,2)+'\n');await fs.rename(new URL('../data/atlas.json.tmp',import.meta.url),new URL('../data/atlas.json',import.meta.url));console.log(`Synced ${companies.length} companies, ${brands.length} brands`);
