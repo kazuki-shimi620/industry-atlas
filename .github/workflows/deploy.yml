@@ -1,0 +1,50 @@
+name: Sync Notion and deploy
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Sync Notion when configured
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_COMPANIES_DB_ID: ${{ vars.NOTION_COMPANIES_DB_ID }}
+          NOTION_BRANDS_DB_ID: ${{ vars.NOTION_BRANDS_DB_ID }}
+        run: |
+          if [ -n "$NOTION_TOKEN" ]; then
+            npm run sync
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "::error::NOTION_TOKEN is required for scheduled synchronization"
+            exit 1
+          else
+            echo "Using the included Notion snapshot; automatic synchronization is not configured."
+          fi
+      - run: npm run check
+      - name: Build
+        env:
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
